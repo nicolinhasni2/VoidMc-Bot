@@ -33,7 +33,7 @@ client.once("clientReady", () => {
         type: ActivityType.Watching
       }
     ],
-    status: "online"
+    status: "dnd"
   });
 });
 
