@@ -1,0 +1,13 @@
+{
+  "name": "voidmc-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord VoidMc",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "express": "^5.1.0"
+  }
+}
