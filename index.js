@@ -19,8 +19,9 @@ const CONFIG = {
   INVITE_LOG_CHANNEL_ID: process.env.INVITE_LOG_CHANNEL_ID || "",
   BRAND_NAME: "Astral MC",
   BRAND_COLOR: 0x3b82f6,
+  BOT_USER_ID: process.env.ASTRAL_BOT_USER_ID || "1543661656125608060",
   INVITE_DB_FILE: process.env.INVITE_DB_FILE || path.join(__dirname, "invite-tracking.json"),
-  WELCOME_BANNER_FILE: process.env.WELCOME_BANNER_FILE || path.join(__dirname, "astralbanner.gif"),
+  WELCOME_BANNER_FILE: process.env.WELCOME_BANNER_FILE || path.join(__dirname, "astralbanner.png"),
 };
 
 const client = new Client({
@@ -165,7 +166,7 @@ async function sendWelcome(member, inviteInfo) {
   if (!channel || !channel.isTextBased()) return;
 
   const inviterText = inviteInfo?.vanity
-    ? "**Astral MC 💫**"
+    ? `<@${CONFIG.BOT_USER_ID}>`
     : inviteInfo?.inviterId
       ? `<@${inviteInfo.inviterId}>`
       : "Não identificado";
@@ -187,7 +188,7 @@ async function sendWelcome(member, inviteInfo) {
       { name: "🎟️ Convite usado", value: inviteCodeText, inline: true }
     )
     .setThumbnail(avatarUrl(member.user))
-    .setImage("attachment://astralbanner.gif")
+    .setImage("attachment://astralbanner.png")
     .setFooter({ text: "Astral MC • Seja bem-vindo!" })
     .setTimestamp();
 
@@ -199,7 +200,7 @@ async function sendWelcome(member, inviteInfo) {
 
   if (fs.existsSync(CONFIG.WELCOME_BANNER_FILE)) {
     payload.files = [
-      { attachment: CONFIG.WELCOME_BANNER_FILE, name: "astralbanner.gif" },
+      { attachment: CONFIG.WELCOME_BANNER_FILE, name: "astralbanner.png" },
     ];
   } else {
     // Se o arquivo não estiver no repositório, remove a imagem para a mensagem não falhar.
@@ -210,13 +211,26 @@ async function sendWelcome(member, inviteInfo) {
 }
 
 async function sendLeave(member, savedInvite) {
-  if (!CONFIG.LEAVE_CHANNEL_ID) return;
+  if (!CONFIG.LEAVE_CHANNEL_ID) {
+    console.warn("[LEAVE] LEAVE_CHANNEL_ID não configurado.");
+    return false;
+  }
 
-  const channel = await member.guild.channels.fetch(CONFIG.LEAVE_CHANNEL_ID).catch(() => null);
-  if (!channel || !channel.isTextBased()) return;
+  let channel = member.guild.channels.cache.get(CONFIG.LEAVE_CHANNEL_ID) || null;
+  if (!channel) {
+    channel = await member.guild.channels.fetch(CONFIG.LEAVE_CHANNEL_ID).catch((error) => {
+      console.error("[LEAVE] Não consegui buscar o canal de saída:", error);
+      return null;
+    });
+  }
+
+  if (!channel || !channel.isTextBased()) {
+    console.error(`[LEAVE] Canal de saída inválido ou não é de texto: ${CONFIG.LEAVE_CHANNEL_ID}`);
+    return false;
+  }
 
   const inviterText = savedInvite?.sourceType === "vanity"
-    ? "**Astral MC 💫**"
+    ? `<@${CONFIG.BOT_USER_ID}>`
     : savedInvite?.inviterId
       ? `<@${savedInvite.inviterId}>`
       : "Não identificado";
@@ -238,7 +252,14 @@ async function sendLeave(member, savedInvite) {
     .setFooter({ text: `Astral MC • Agora: ${member.guild.memberCount} membros` })
     .setTimestamp();
 
-  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  const sent = await channel.send({
+    embeds: [embed],
+    // Mostra as menções clicáveis sem disparar ping.
+    allowedMentions: { parse: [], users: [] },
+  });
+
+  console.log(`[LEAVE] Mensagem de saída enviada para #${channel.name} (${sent.id}).`);
+  return true;
 }
 
 async function sendInviteLog(member, inviteInfo) {
@@ -248,7 +269,7 @@ async function sendInviteLog(member, inviteInfo) {
   if (!channel || !channel.isTextBased()) return;
 
   const inviterText = inviteInfo?.vanity
-    ? "**Astral MC 💫 (link personalizado)**"
+    ? `<@${CONFIG.BOT_USER_ID}> **(link personalizado)**`
     : inviteInfo?.inviterId
       ? `<@${inviteInfo.inviterId}>`
       : "Não identificado";
@@ -336,6 +357,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
 });
 
 client.on(Events.GuildMemberRemove, async (member) => {
+  console.log(`[LEAVE EVENT] ${member.user?.tag || member.id} (${member.id}) saiu do servidor.`);
   try {
     const savedInvite = inviteDb[member.id] || null;
     await sendLeave(member, savedInvite);
