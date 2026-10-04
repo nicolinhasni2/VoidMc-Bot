@@ -20,6 +20,7 @@ const CONFIG = {
   BRAND_NAME: "Astral MC",
   BRAND_COLOR: 0x3b82f6,
   INVITE_DB_FILE: process.env.INVITE_DB_FILE || path.join(__dirname, "invite-tracking.json"),
+  WELCOME_BANNER_FILE: process.env.WELCOME_BANNER_FILE || path.join(__dirname, "astralbanner.gif"),
 };
 
 const client = new Client({
@@ -31,6 +32,7 @@ const client = new Client({
 });
 
 const inviteCache = new Map();
+const vanityCache = new Map();
 
 function loadInviteDb() {
   try {
@@ -95,6 +97,46 @@ async function fetchGuildInvites(guild) {
   }
 }
 
+async function fetchVanityData(guild) {
+  try {
+    const response = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/vanity-url`, {
+      headers: { Authorization: `Bot ${process.env.DISCORD_TOKEN}` },
+    });
+
+    // Servidores sem vanity URL podem responder sem código configurado.
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.warn(`[VANITY] Não consegui consultar o link personalizado (${response.status}): ${detail}`);
+      return null;
+    }
+
+    const data = await response.json();
+    const result = {
+      code: data?.code || null,
+      uses: Number(data?.uses || 0),
+    };
+
+    vanityCache.set(guild.id, result);
+    return result;
+  } catch (error) {
+    console.error(`[VANITY] Erro consultando vanity URL de ${guild.name}:`, error);
+    return null;
+  }
+}
+
+function detectUsedVanity(before, after) {
+  if (!before || !after || !after.code) return null;
+  if (Number(after.uses || 0) <= Number(before.uses || 0)) return null;
+
+  return {
+    code: after.code,
+    uses: after.uses,
+    vanity: true,
+    inviterId: null,
+    inviterTag: "Astral MC",
+  };
+}
+
 function detectUsedInvite(before, after) {
   if (!before || !after) return null;
 
@@ -122,9 +164,11 @@ async function sendWelcome(member, inviteInfo) {
   const channel = await member.guild.channels.fetch(CONFIG.WELCOME_CHANNEL_ID).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
 
-  const inviterText = inviteInfo?.inviterId
-    ? `<@${inviteInfo.inviterId}>`
-    : "Não identificado";
+  const inviterText = inviteInfo?.vanity
+    ? "**Astral MC 💫**"
+    : inviteInfo?.inviterId
+      ? `<@${inviteInfo.inviterId}>`
+      : "Não identificado";
 
   const inviteCodeText = inviteInfo?.code
     ? `\`${inviteInfo.code}\``
@@ -143,14 +187,26 @@ async function sendWelcome(member, inviteInfo) {
       { name: "🎟️ Convite usado", value: inviteCodeText, inline: true }
     )
     .setThumbnail(avatarUrl(member.user))
+    .setImage("attachment://astralbanner.gif")
     .setFooter({ text: "Astral MC • Seja bem-vindo!" })
     .setTimestamp();
 
-  await channel.send({
+  const payload = {
     content: `<@${member.id}>`,
     embeds: [embed],
     allowedMentions: { users: [member.id] },
-  });
+  };
+
+  if (fs.existsSync(CONFIG.WELCOME_BANNER_FILE)) {
+    payload.files = [
+      { attachment: CONFIG.WELCOME_BANNER_FILE, name: "astralbanner.gif" },
+    ];
+  } else {
+    // Se o arquivo não estiver no repositório, remove a imagem para a mensagem não falhar.
+    embed.setImage(null);
+  }
+
+  await channel.send(payload);
 }
 
 async function sendLeave(member, savedInvite) {
@@ -159,9 +215,11 @@ async function sendLeave(member, savedInvite) {
   const channel = await member.guild.channels.fetch(CONFIG.LEAVE_CHANNEL_ID).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
 
-  const inviterText = savedInvite?.inviterId
-    ? `<@${savedInvite.inviterId}>`
-    : "Não identificado";
+  const inviterText = savedInvite?.sourceType === "vanity"
+    ? "**Astral MC 💫**"
+    : savedInvite?.inviterId
+      ? `<@${savedInvite.inviterId}>`
+      : "Não identificado";
 
   const joinedAt = member.joinedAt
     ? formatDate(member.joinedAt)
@@ -189,9 +247,11 @@ async function sendInviteLog(member, inviteInfo) {
   const channel = await member.guild.channels.fetch(CONFIG.INVITE_LOG_CHANNEL_ID).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
 
-  const inviterText = inviteInfo?.inviterId
-    ? `<@${inviteInfo.inviterId}>`
-    : "Não identificado";
+  const inviterText = inviteInfo?.vanity
+    ? "**Astral MC 💫 (link personalizado)**"
+    : inviteInfo?.inviterId
+      ? `<@${inviteInfo.inviterId}>`
+      : "Não identificado";
 
   const codeText = inviteInfo?.code ? `\`${inviteInfo.code}\`` : "Não identificado";
 
@@ -222,6 +282,7 @@ client.once(Events.ClientReady, async () => {
 
   for (const guild of client.guilds.cache.values()) {
     await fetchGuildInvites(guild);
+    await fetchVanityData(guild);
   }
 });
 
@@ -237,9 +298,19 @@ client.on(Events.InviteDelete, async (invite) => {
 
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
-    const before = inviteCache.get(member.guild.id) || new Map();
-    const after = await fetchGuildInvites(member.guild);
-    const usedInvite = detectUsedInvite(before, after);
+    const beforeInvites = inviteCache.get(member.guild.id) || new Map();
+    const beforeVanity = vanityCache.get(member.guild.id) || null;
+
+    const afterInvites = await fetchGuildInvites(member.guild);
+    const afterVanity = await fetchVanityData(member.guild);
+
+    let usedInvite = detectUsedInvite(beforeInvites, afterInvites);
+
+    // O link personalizado (vanity URL) pertence ao servidor, não a um usuário.
+    // Se o contador dele subir, mostramos "Astral MC" como origem da entrada.
+    if (!usedInvite) {
+      usedInvite = detectUsedVanity(beforeVanity, afterVanity);
+    }
 
     const record = {
       memberId: member.id,
@@ -247,6 +318,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
       inviterId: usedInvite?.inviterId || null,
       inviterTag: usedInvite?.inviterTag || null,
       inviteCode: usedInvite?.code || null,
+      sourceType: usedInvite?.vanity ? "vanity" : (usedInvite ? "invite" : "unknown"),
       joinedAt: new Date().toISOString(),
     };
 
@@ -281,6 +353,8 @@ app.get("/", (req, res) => {
     status: client.isReady() ? "online" : "connecting",
     features: {
       inviteTracking: true,
+      vanityTracking: true,
+      animatedWelcomeBanner: fs.existsSync(CONFIG.WELCOME_BANNER_FILE),
       welcomeMessages: !!CONFIG.WELCOME_CHANNEL_ID,
       leaveMessages: !!CONFIG.LEAVE_CHANNEL_ID,
     },
