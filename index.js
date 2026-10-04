@@ -34,6 +34,7 @@ const client = new Client({
 
 const inviteCache = new Map();
 const vanityCache = new Map();
+const recentLeaveHandled = new Map();
 
 function loadInviteDb() {
   try {
@@ -356,14 +357,69 @@ client.on(Events.GuildMemberAdd, async (member) => {
   }
 });
 
-client.on(Events.GuildMemberRemove, async (member) => {
-  console.log(`[LEAVE EVENT] ${member.user?.tag || member.id} (${member.id}) saiu do servidor.`);
+
+function markLeaveHandled(userId) {
+  recentLeaveHandled.set(userId, Date.now());
+  setTimeout(() => recentLeaveHandled.delete(userId), 10_000).unref?.();
+}
+
+function wasLeaveHandled(userId) {
+  const when = recentLeaveHandled.get(userId);
+  return !!when && (Date.now() - when) < 10_000;
+}
+
+async function handleMemberLeave(member, source = "normal") {
+  if (!member?.id || wasLeaveHandled(member.id)) return;
+
+  markLeaveHandled(member.id);
+  console.log(`[LEAVE EVENT:${source}] ${member.user?.tag || member.id} (${member.id}) saiu do servidor.`);
+
   try {
     const savedInvite = inviteDb[member.id] || null;
     await sendLeave(member, savedInvite);
   } catch (error) {
-    console.error("[LEAVE] Erro processando saída:", error);
+    console.error(`[LEAVE:${source}] Erro processando saída:`, error);
   }
+}
+
+client.on(Events.GuildMemberRemove, async (member) => {
+  await handleMemberLeave(member, "guildMemberRemove");
+});
+
+// Fallback de baixo nível.
+// Em alguns cenários o evento normal do discord.js pode não chegar como esperado
+// por estado de cache. O pacote RAW ainda contém GUILD_MEMBER_REMOVE.
+// Esperamos um pouco e só enviamos se o evento normal não tiver sido tratado.
+client.on(Events.Raw, async (packet) => {
+  if (packet?.t !== "GUILD_MEMBER_REMOVE") return;
+
+  const data = packet.d || {};
+  const userId = data.user?.id;
+  const guildId = data.guild_id;
+  if (!userId || !guildId) return;
+
+  setTimeout(async () => {
+    if (wasLeaveHandled(userId)) return;
+
+    try {
+      const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId);
+      const user = client.users.cache.get(userId) || await client.users.fetch(userId);
+
+      const savedInvite = inviteDb[userId] || null;
+      const joinedAt = savedInvite?.joinedAt ? new Date(savedInvite.joinedAt) : null;
+
+      const pseudoMember = {
+        id: userId,
+        guild,
+        user,
+        joinedAt,
+      };
+
+      await handleMemberLeave(pseudoMember, "raw-fallback");
+    } catch (error) {
+      console.error("[LEAVE:raw-fallback] Falha no fallback de saída:", error);
+    }
+  }, 1200);
 });
 
 client.on("error", console.error);
@@ -376,7 +432,7 @@ app.get("/", (req, res) => {
     features: {
       inviteTracking: true,
       vanityTracking: true,
-      animatedWelcomeBanner: fs.existsSync(CONFIG.WELCOME_BANNER_FILE),
+      welcomeBanner: fs.existsSync(CONFIG.WELCOME_BANNER_FILE),
       welcomeMessages: !!CONFIG.WELCOME_CHANNEL_ID,
       leaveMessages: !!CONFIG.LEAVE_CHANNEL_ID,
     },
