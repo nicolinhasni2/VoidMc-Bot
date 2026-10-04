@@ -1,13 +1,16 @@
 {
-  "name": "voidmc-bot",
-  "version": "1.0.0",
-  "description": "Bot Discord VoidMc",
+  "name": "astralmc-bot",
+  "version": "2.0.0",
+  "description": "Astral MC Discord Gateway bot - presença, convites, entrada e saída",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "discord.js": "^14.22.1",
-    "express": "^5.1.0"
+    "discord.js": "^14.27.0",
+    "express": "^5.2.1"
   }
 }
