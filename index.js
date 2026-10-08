@@ -32,6 +32,41 @@ const client = new Client({
   ],
 });
 
+// Registro dos comandos mantidos pelo Cloudflare. O Railway apenas solicita
+// o registro ao Worker; os comandos e tickets continuam executados lá.
+const CLOUDFLARE_COMMANDS_URL = process.env.CLOUDFLARE_COMMANDS_URL ||
+  "https://sugarsmp-ticket-bot.nicolinhasni2401.workers.dev/register-commands";
+const CLOUDFLARE_SETUP_SECRET = process.env.CLOUDFLARE_SETUP_SECRET || "";
+const COMMAND_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let commandSyncRunning = false;
+
+async function syncCloudflareCommands() {
+  if (!CLOUDFLARE_SETUP_SECRET) {
+    console.log("[COMANDOS] Sincronização desativada: configure CLOUDFLARE_SETUP_SECRET no Railway.");
+    return;
+  }
+  if (commandSyncRunning) return;
+  commandSyncRunning = true;
+  try {
+    const response = await fetch(CLOUDFLARE_COMMANDS_URL, {
+      method: "POST",
+      headers: { "x-setup-secret": CLOUDFLARE_SETUP_SECRET },
+      signal: AbortSignal.timeout(15000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) {
+      console.error(`[COMANDOS] Falha no registro (${response.status}):`, result.error || "resposta inesperada");
+      return;
+    }
+    console.log("[COMANDOS] Registrados pelo Cloudflare:",
+      (result.commands || []).map((command) => command.name).join(", "));
+  } catch (error) {
+    console.error("[COMANDOS] Cloudflare indisponível:", error.message);
+  } finally {
+    commandSyncRunning = false;
+  }
+}
+
 const inviteCache = new Map();
 const vanityCache = new Map();
 const recentLeaveHandled = new Map();
@@ -301,6 +336,9 @@ client.once(Events.ClientReady, async () => {
     activities: [{ name: "💫 Astral MC", type: ActivityType.Watching }],
     status: "online",
   });
+
+  void syncCloudflareCommands();
+  setInterval(() => void syncCloudflareCommands(), COMMAND_SYNC_INTERVAL_MS).unref();
 
   for (const guild of client.guilds.cache.values()) {
     await fetchGuildInvites(guild);
